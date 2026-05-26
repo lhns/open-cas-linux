@@ -568,6 +568,38 @@ Identifier of cache instance <1-16384>.
 .B -f, --file <FILE>
 Configuration file containing IO class definition.
 
+.PP
+The configuration file is a CSV with the following columns. The header
+row is mandatory; column order is determined by the header.
+.RS
+.IP \(bu 2
+\fBIO class id\fR (required) -- integer 0-32. ID 0 is reserved and must
+have the name \fIunclassified\fR.
+.IP \(bu 2
+\fBIO class name\fR (required) -- classifier rule expression, or the
+literal \fIunclassified\fR for ID 0. May not contain commas or quotation
+marks.
+.IP \(bu 2
+\fBEviction priority\fR (required) -- integer 0-255 (lower = evicted
+later), or empty for "Pinned" (never evicted).
+.IP \(bu 2
+\fBAllocation\fR (required) -- fixed-point fraction 0.00-1.00. Maximum
+cache share for this class. 0.00 disables caching (pass-through).
+.IP \(bu 2
+\fBCache mode\fR (optional) -- per-IO-class cache mode override. One of
+\fIwt\fR, \fIwb\fR, \fIwa\fR, \fIpt\fR, \fIwo\fR (and \fIwi\fR when
+built with WI support). If the column is absent or the value is empty,
+the cache-level mode is used. If present, the specified mode is applied
+to all IOs matching this class, overriding the cache-level mode for
+those IOs only.
+.RE
+.PP
+\fB--io-class --list --output-format csv\fR always emits the
+\fBCache mode\fR column, so its CSV output contains five columns.
+Scripts that parse the output by column name (using the header row) are
+unaffected; scripts that parse by hardcoded column index must be
+updated.
+
 .SH Options that are valid with --io-class --list (-C -L) are:
 .TP
 .B -i, --cache-id <ID>
