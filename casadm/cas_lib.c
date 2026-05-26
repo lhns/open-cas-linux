@@ -2289,13 +2289,15 @@ int flush_core(unsigned int cache_id, unsigned int core_id)
 struct partition_config_col {
 	const char *name;
 	int pos;
+	bool optional;
 };
 
 static struct partition_config_col partition_config_columns[] = {
-	{ .name = "IO class id", .pos = -1 },
-	{ .name = "IO class name", .pos = -1 },
-	{ .name = "Eviction priority", .pos = -1 },
-	{ .name = "Allocation", .pos = -1 },
+	{ .name = "IO class id",       .pos = -1, .optional = false },
+	{ .name = "IO class name",     .pos = -1, .optional = false },
+	{ .name = "Eviction priority", .pos = -1, .optional = false },
+	{ .name = "Allocation",        .pos = -1, .optional = false },
+	{ .name = "Cache mode",        .pos = -1, .optional = true  },
 	{ .name = NULL }
 };
 
@@ -2303,6 +2305,7 @@ void partition_list_line(FILE *out, struct kcas_io_class *cls, bool csv)
 {
 	char buffer[128];
 	const char *prio;
+	const char *cmode;
 	char allocation_str[MAX_STR_LEN];
 
 	snprintf(allocation_str, sizeof(allocation_str), "%d.%02d",
@@ -2315,8 +2318,17 @@ void partition_list_line(FILE *out, struct kcas_io_class *cls, bool csv)
 		prio = buffer;
 	}
 
-	fprintf(out, TAG(TABLE_ROW)"%u,%s,%s,%s\n",
-		cls->class_id, cls->info.name, prio, allocation_str);
+	/* ocf_cache_mode_max (and any out-of-range value) means "inherit
+	 * cache-level mode" -- render as empty so it round-trips through
+	 * the loader as the inherit sentinel. */
+	if ((int)cls->info.cache_mode < (int)ocf_cache_mode_wt ||
+	    cls->info.cache_mode >= ocf_cache_mode_max)
+		cmode = "";
+	else
+		cmode = cache_mode_to_name(cls->info.cache_mode);
+
+	fprintf(out, TAG(TABLE_ROW)"%u,%s,%s,%s,%s\n",
+		cls->class_id, cls->info.name, prio, allocation_str, cmode);
 
 }
 
@@ -2394,6 +2406,7 @@ enum {
 	part_csv_coll_name,
 	part_csv_coll_prio,
 	part_csv_coll_alloc,
+	part_csv_coll_cmode,
 	part_csv_coll_max
 };
 
@@ -2424,6 +2437,16 @@ static inline const char *partition_get_csv_col(CSVFILE *csv, int col,
 						int *error_col)
 {
 	const char *val;
+
+	/* Column wasn't present in the header. If it's optional the caller
+	 * must treat that as "absent"; if required, that's a schema bug
+	 * caught upstream by partition_parse_header(), but flag it here
+	 * defensively. */
+	if (partition_config_columns[col].pos < 0) {
+		if (!partition_config_columns[col].optional)
+			*error_col = col;
+		return NULL;
+	}
 
 	val = csv_get_col(csv, partition_config_columns[col].pos);
 	if (!val) {
@@ -2532,9 +2555,29 @@ static inline int partition_get_line(CSVFILE *csv,
 	if (calculate_max_allocation(cnfg->cache_id, alloc, &value) == FAILURE)
 		return FAILURE;
 
-	cnfg->info[part_id].cache_mode = ocf_cache_mode_max;
 	cnfg->info[part_id].min_size = 0;
 	cnfg->info[part_id].max_size = value;
+
+	/* Cache mode column is optional. Absent column or empty cell means
+	 * "inherit cache-level mode" -- OCF treats anything outside the
+	 * valid mode range as the inherit sentinel. */
+	cnfg->info[part_id].cache_mode = ocf_cache_mode_max;
+	if (partition_config_columns[part_csv_coll_cmode].pos >= 0) {
+		const char *cmode = partition_get_csv_col(csv,
+				part_csv_coll_cmode, error_col);
+		if (cmode && !strempty(cmode)) {
+			int m;
+
+			*error_col = part_csv_coll_cmode;
+			m = validate_str_cache_mode(cmode);
+			if (m < 0) {
+				cas_printf(LOG_ERR,
+					"Invalid cache mode '%s'\n", cmode);
+				return FAILURE;
+			}
+			cnfg->info[part_id].cache_mode = (ocf_cache_mode_t)m;
+		}
+	}
 
 	return 0;
 }
@@ -2543,6 +2586,13 @@ static int partition_parse_header(CSVFILE *csv)
 {
 	int i, j, csv_cols;
 	const char *col_name;
+
+	/* Reset positions so this function is idempotent across multiple
+	 * config loads in the same process: an optional column present in
+	 * one load and omitted in the next would otherwise keep a stale
+	 * position. */
+	for (i = 0; partition_config_columns[i].name; i++)
+		partition_config_columns[i].pos = -1;
 
 	csv_cols = csv_count_cols(csv);
 	for (i = 0; i < csv_cols; i++) {
@@ -2568,7 +2618,8 @@ static int partition_parse_header(CSVFILE *csv)
 	}
 
 	for (i = 0; partition_config_columns[i].name; i++) {
-		if (partition_config_columns[i].pos < 0) {
+		if (partition_config_columns[i].pos < 0 &&
+		    !partition_config_columns[i].optional) {
 			cas_printf(LOG_ERR,
 				   "Cannot parse configuration file - missing column \"%s\".\n",
 				   partition_config_columns[i].name);
@@ -2625,12 +2676,26 @@ int partition_get_config(CSVFILE *csv, struct kcas_io_classes *cnfg,
 			}
 		}
 
-		if (part_csv_coll_max != csv_count_cols(csv)) {
-			if (csv_empty_line(csv)) {
-				continue;
-			} else {
-				result = FAILURE;
-				break;
+		{
+			/* Expected row width = number of columns the header
+			 * actually declared (i.e. those that got assigned a
+			 * position by partition_parse_header). Generalizes to
+			 * any number of optional columns. */
+			int expected_cols = 0;
+			int j;
+
+			for (j = 0; partition_config_columns[j].name; j++) {
+				if (partition_config_columns[j].pos >= 0)
+					expected_cols++;
+			}
+
+			if (expected_cols != csv_count_cols(csv)) {
+				if (csv_empty_line(csv)) {
+					continue;
+				} else {
+					result = FAILURE;
+					break;
+				}
 			}
 		}
 
