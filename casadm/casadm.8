@@ -491,6 +491,19 @@ Defines output format for list of all cache instances and core devices. It can b
 Display path to devices in long format (/dev/disk/by-id/some_link).
 If this option is not given, displays path in short format (/dev/sdx) instead.
 
+.PP
+The \fBwrite policy\fR column shows, for each cache, the cache-wide mode,
+and for each core, the predominant effective cache mode for traffic to
+that core. The predominant mode is resolved from the IO class table: a
+pure \fBcore_id:eq:N\fR-style IO class with a cache-mode override wins
+for the matching cores, otherwise the unclassified (id 0) class's
+cache-mode override applies if set, otherwise the cache-wide mode. A
+trailing \fB*\fR on a value indicates that the cache has at least one
+IO class with a cache-mode override; use \fBcasadm --io-class --list\fR
+to inspect the full per-class configuration. Scripts that parse the CSV
+output by column name should strip a trailing \fB*\fR before comparing
+the value.
+
 .SH Options that are valid with --stats (-P) are:
 .TP
 .B -i, --cache-id <ID>
