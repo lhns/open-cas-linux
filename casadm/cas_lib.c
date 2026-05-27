@@ -2410,6 +2410,171 @@ int partition_list(unsigned int cache_id, unsigned int output_format)
 	return result;
 }
 
+/* Narrow IO-class rule parser used by list_caches() to compute the
+ * predominant cache mode per core. Accepts ONLY rules of the form
+ * "core_id:eq:N" optionally OR'd with more of the same, with an
+ * optional "&done" terminator on each term. Anything else (metadata,
+ * file_size, io_size, mixed conditions, core_id:ne, etc.) is
+ * rejected; callers fall back to the asterisk-only marker on such
+ * caches.
+ *
+ * The kernel module's classifier (modules/cas_cache/classifier.c)
+ * has a full-grammar parser, but it is kernel-only, tightly coupled
+ * to evaluating a concrete struct ocf_request, and not exposed via
+ * any userspace-callable interface or ioctl. Reusing it from casadm
+ * would require lifting the tokenizer into a shared library, which
+ * is out of scope for this view-only feature. This narrow parser
+ * covers the common case (per-core cache mode via core_id:eq rules)
+ * and degrades safely to "*" on anything else.
+ *
+ * On success, appends each referenced core id to out_ids[] (capacity
+ * cap; count written to *out_count) and returns true. Returns false
+ * if any sub-term doesn't match the grammar, no core id is
+ * referenced at all, or cap would overflow. Never modifies the
+ * caller's rule buffer. */
+static bool parse_pure_core_id_rule(const char *rule, uint16_t *out_ids,
+				    size_t cap, size_t *out_count)
+{
+	char buf[OCF_IO_CLASS_NAME_MAX];
+	char *or_save = NULL;
+	char *or_tok;
+	size_t count = 0;
+	size_t len;
+
+	if (!rule)
+		return false;
+	len = strnlen(rule, OCF_IO_CLASS_NAME_MAX);
+	if (len == 0 || len >= OCF_IO_CLASS_NAME_MAX)
+		return false;
+	memcpy(buf, rule, len);
+	buf[len] = '\0';
+
+	or_tok = strtok_r(buf, "|", &or_save);
+	while (or_tok) {
+		char *and_save = NULL;
+		char *and_tok;
+		bool term_has_core_id = false;
+		unsigned long term_core_id = 0;
+
+		and_tok = strtok_r(or_tok, "&", &and_save);
+		while (and_tok) {
+			if (and_tok[0] == '\0' ||
+			    strcmp(and_tok, "done") == 0) {
+				/* accepted, no core id contribution */
+			} else if (strncmp(and_tok, "core_id:eq:", 11) == 0) {
+				char *end;
+				unsigned long v;
+
+				if (term_has_core_id)
+					return false;
+				v = strtoul(and_tok + 11, &end, 10);
+				if (*end != '\0' || end == and_tok + 11)
+					return false;
+				term_core_id = v;
+				term_has_core_id = true;
+			} else {
+				return false;
+			}
+			and_tok = strtok_r(NULL, "&", &and_save);
+		}
+
+		if (term_has_core_id) {
+			if (count >= cap)
+				return false;
+			out_ids[count++] = (uint16_t)term_core_id;
+		}
+
+		or_tok = strtok_r(NULL, "|", &or_save);
+	}
+
+	if (count == 0)
+		return false;
+
+	*out_count = count;
+	return true;
+}
+
+/* Per-cache view of effective cache mode per core, derived from the IO
+ * class table. Used by list_caches() to render the "write policy"
+ * column. per_core[i] == ocf_cache_mode_max means "no pure-core-id
+ * IO class maps this core"; the caller should use `fallback`. */
+struct cache_cmode_view {
+	ocf_cache_mode_t *per_core;	/* OCF_CORE_NUM entries */
+	ocf_cache_mode_t fallback;
+	bool any_override;
+};
+
+static int cache_cmode_view_init(struct cache_cmode_view *view,
+				 ocf_cache_mode_t cache_wide_mode)
+{
+	int i;
+
+	view->per_core = malloc(OCF_CORE_NUM * sizeof(*view->per_core));
+	if (!view->per_core)
+		return -1;
+	for (i = 0; i < OCF_CORE_NUM; i++)
+		view->per_core[i] = ocf_cache_mode_max;
+	view->fallback = cache_wide_mode;
+	view->any_override = false;
+	return 0;
+}
+
+static void cache_cmode_view_deinit(struct cache_cmode_view *view)
+{
+	free(view->per_core);
+	view->per_core = NULL;
+}
+
+static void cache_cmode_view_build(struct cache_cmode_view *view,
+				   unsigned int cache_id)
+{
+	struct kcas_io_class io_class;
+	uint16_t ids[256];
+	size_t n;
+	int fd, i;
+
+	fd = open_ctrl_device();
+	if (fd == -1)
+		return;
+
+	for (i = 0; i < OCF_USER_IO_CLASS_MAX; i++) {
+		memset(&io_class, 0, sizeof(io_class));
+		io_class.cache_id = cache_id;
+		io_class.class_id = i;
+
+		if (run_ioctl(fd, KCAS_IOCTL_PARTITION_INFO, &io_class)) {
+			if (io_class.ext_err_code == OCF_ERR_IO_CLASS_NOT_EXIST)
+				continue;
+			break;
+		}
+
+		if (io_class.info.cache_mode < ocf_cache_mode_wt ||
+		    io_class.info.cache_mode >= ocf_cache_mode_max)
+			continue;
+
+		view->any_override = true;
+
+		if (i == 0) {
+			/* unclassified catchall */
+			view->fallback = io_class.info.cache_mode;
+			continue;
+		}
+
+		n = 0;
+		if (!parse_pure_core_id_rule(io_class.info.name, ids,
+					     sizeof(ids) / sizeof(ids[0]), &n))
+			continue;
+
+		for (size_t k = 0; k < n; k++) {
+			if (ids[k] < OCF_CORE_NUM &&
+			    view->per_core[ids[k]] == ocf_cache_mode_max)
+				view->per_core[ids[k]] = io_class.info.cache_mode;
+		}
+	}
+
+	close(fd);
+}
+
 enum {
 	part_csv_coll_id = 0,
 	part_csv_coll_name,
@@ -3059,10 +3224,14 @@ int list_caches(unsigned int list_format, bool by_id_path)
 		char status_buf[CACHE_STATE_LENGTH];
 		const char *tmp_status;
 		char mode_string[12];
+		char core_mode_string[12];
 		char exp_obj[32];
 		char cache_ctrl_dev[MAX_STR_LEN] = "-";
 		float cache_flush_prog;
 		float core_flush_prog;
+		struct cache_cmode_view view = { 0 };
+		bool have_view = false;
+		const char *asterisk;
 		bool cache_device_detached =
 			((curr_cache->state & (1 << ocf_cache_state_standby)) |
 			(curr_cache->state & (1 << ocf_cache_state_detached)));
@@ -3077,13 +3246,23 @@ int list_caches(unsigned int list_format, bool by_id_path)
 			}
 		}
 
+		if (!cache_device_detached &&
+		    !(curr_cache->state & (1 << ocf_cache_state_standby))) {
+			if (cache_cmode_view_init(&view, curr_cache->mode) == 0) {
+				cache_cmode_view_build(&view, curr_cache->id);
+				have_view = true;
+			}
+		}
+		asterisk = (have_view && view.any_override) ? "*" : "";
+
 		cache_flush_prog = calculate_flush_progress(curr_cache->dirty, curr_cache->flushed);
 		if (cache_flush_prog) {
 			snprintf(status_buf, sizeof(status_buf),
 				"%s (%3.1f %%)", "Flushing", cache_flush_prog);
 			tmp_status = status_buf;
-			snprintf(mode_string, sizeof(mode_string), "wb->%s",
-					cache_mode_to_name(curr_cache->mode));
+			snprintf(mode_string, sizeof(mode_string), "wb->%s%s",
+					cache_mode_to_name(curr_cache->mode),
+					asterisk);
 		} else {
 			tmp_status = get_cache_state_name(curr_cache->state, curr_cache->standby_detached);
 
@@ -3094,8 +3273,9 @@ int list_caches(unsigned int list_format, bool by_id_path)
 							"/dev/cas-cache-%d", curr_cache->id);
 				}
 			} else {
-				snprintf(mode_string, sizeof(mode_string), "%s",
-						cache_mode_to_name(curr_cache->mode));
+				snprintf(mode_string, sizeof(mode_string), "%s%s",
+						cache_mode_to_name(curr_cache->mode),
+						asterisk);
 			}
 		}
 
@@ -3132,15 +3312,32 @@ int list_caches(unsigned int list_format, bool by_id_path)
 			snprintf(exp_obj, sizeof(exp_obj), "/dev/cas%d-%d",
 					curr_cache->id, curr_core->id);
 
+			if (have_view && curr_core->id >= 0 &&
+			    curr_core->id < OCF_CORE_NUM) {
+				ocf_cache_mode_t resolved =
+					(view.per_core[curr_core->id] != ocf_cache_mode_max)
+						? view.per_core[curr_core->id]
+						: view.fallback;
+				snprintf(core_mode_string, sizeof(core_mode_string),
+						"%s%s",
+						cache_mode_to_name(resolved),
+						asterisk);
+			} else {
+				strncpy(core_mode_string, "-", sizeof(core_mode_string));
+			}
+
 			fprintf(intermediate_file[1], TAG(TREE_LEAF)
 					"%s,%u,%s,%s,%s,%s\n",
 					"core", /* type */
 					curr_core->id, /* id */
 					core_path, /* path to core*/
 					tmp_status, /* core status */
-					"-", /* write policy */
+					core_mode_string, /* write policy */
 					curr_core->info.exp_obj_exists ? exp_obj : "-" /* exported object path */);
 		}
+
+		if (have_view)
+			cache_cmode_view_deinit(&view);
 	}
 
 	free_cache_devices_list(caches, caches_count);
