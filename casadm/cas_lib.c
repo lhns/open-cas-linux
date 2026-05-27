@@ -395,7 +395,7 @@ static const char* val_to_short_name(int value, const struct name_to_val_mapping
 
 inline const char *cache_mode_to_name(uint8_t cache_mode)
 {
-	return val_to_short_name(cache_mode, cache_mode_names, "Unknown");
+	return val_to_short_name(cache_mode, cache_mode_names, "-");
 }
 
 static inline const char *cache_mode_to_name_long(uint8_t cache_mode)
