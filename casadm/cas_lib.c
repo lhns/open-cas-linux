@@ -2497,27 +2497,17 @@ static bool parse_pure_core_id_rule(const char *rule, uint16_t *out_ids,
 /* Per-cache view of effective cache mode per core, derived from the IO
  * class table. Used by list_caches() to render the "write policy"
  * column. per_core[i] == ocf_cache_mode_max means "no pure-core-id
- * IO class maps this core"; the caller should use `fallback`. */
+ * IO class maps this core"; the caller should use `fallback`.
+ *
+ * A zero-initialized view (per_core == NULL, any_override == false)
+ * is a valid "no view built" state; it can be passed to
+ * cache_cmode_view_deinit() unchanged, and any_override reads as
+ * false (no asterisk). */
 struct cache_cmode_view {
-	ocf_cache_mode_t *per_core;	/* OCF_CORE_NUM entries */
+	ocf_cache_mode_t *per_core;	/* OCF_CORE_NUM entries, or NULL */
 	ocf_cache_mode_t fallback;
 	bool any_override;
 };
-
-static int cache_cmode_view_init(struct cache_cmode_view *view,
-				 ocf_cache_mode_t cache_wide_mode)
-{
-	int i;
-
-	view->per_core = malloc(OCF_CORE_NUM * sizeof(*view->per_core));
-	if (!view->per_core)
-		return -1;
-	for (i = 0; i < OCF_CORE_NUM; i++)
-		view->per_core[i] = ocf_cache_mode_max;
-	view->fallback = cache_wide_mode;
-	view->any_override = false;
-	return 0;
-}
 
 static void cache_cmode_view_deinit(struct cache_cmode_view *view)
 {
@@ -2525,13 +2515,25 @@ static void cache_cmode_view_deinit(struct cache_cmode_view *view)
 	view->per_core = NULL;
 }
 
+/* Allocate and populate the view. On OOM, leaves view->per_core == NULL
+ * and the rest of the struct in its zero-initialized state -- callers
+ * gate every read on view->per_core. */
 static void cache_cmode_view_build(struct cache_cmode_view *view,
-				   unsigned int cache_id)
+				   unsigned int cache_id,
+				   ocf_cache_mode_t cache_wide_mode)
 {
 	struct kcas_io_class io_class;
 	uint16_t ids[256];
 	size_t n;
 	int fd, i;
+
+	view->per_core = malloc(OCF_CORE_NUM * sizeof(*view->per_core));
+	if (!view->per_core)
+		return;
+	for (i = 0; i < OCF_CORE_NUM; i++)
+		view->per_core[i] = ocf_cache_mode_max;
+	view->fallback = cache_wide_mode;
+	view->any_override = false;
 
 	fd = open_ctrl_device();
 	if (fd == -1)
@@ -3230,8 +3232,6 @@ int list_caches(unsigned int list_format, bool by_id_path)
 		float cache_flush_prog;
 		float core_flush_prog;
 		struct cache_cmode_view view = { 0 };
-		bool have_view = false;
-		const char *asterisk;
 		bool cache_device_detached =
 			((curr_cache->state & (1 << ocf_cache_state_standby)) |
 			(curr_cache->state & (1 << ocf_cache_state_detached)));
@@ -3248,12 +3248,9 @@ int list_caches(unsigned int list_format, bool by_id_path)
 
 		if (!cache_device_detached &&
 		    !(curr_cache->state & (1 << ocf_cache_state_standby))) {
-			if (cache_cmode_view_init(&view, curr_cache->mode) == 0) {
-				cache_cmode_view_build(&view, curr_cache->id);
-				have_view = true;
-			}
+			cache_cmode_view_build(&view, curr_cache->id,
+					curr_cache->mode);
 		}
-		asterisk = (have_view && view.any_override) ? "*" : "";
 
 		cache_flush_prog = calculate_flush_progress(curr_cache->dirty, curr_cache->flushed);
 		if (cache_flush_prog) {
@@ -3262,7 +3259,7 @@ int list_caches(unsigned int list_format, bool by_id_path)
 			tmp_status = status_buf;
 			snprintf(mode_string, sizeof(mode_string), "wb->%s%s",
 					cache_mode_to_name(curr_cache->mode),
-					asterisk);
+					view.any_override ? "*" : "");
 		} else {
 			tmp_status = get_cache_state_name(curr_cache->state, curr_cache->standby_detached);
 
@@ -3275,7 +3272,7 @@ int list_caches(unsigned int list_format, bool by_id_path)
 			} else {
 				snprintf(mode_string, sizeof(mode_string), "%s%s",
 						cache_mode_to_name(curr_cache->mode),
-						asterisk);
+						view.any_override ? "*" : "");
 			}
 		}
 
@@ -3312,7 +3309,7 @@ int list_caches(unsigned int list_format, bool by_id_path)
 			snprintf(exp_obj, sizeof(exp_obj), "/dev/cas%d-%d",
 					curr_cache->id, curr_core->id);
 
-			if (have_view && curr_core->id >= 0 &&
+			if (view.per_core && curr_core->id >= 0 &&
 			    curr_core->id < OCF_CORE_NUM) {
 				ocf_cache_mode_t resolved =
 					(view.per_core[curr_core->id] != ocf_cache_mode_max)
@@ -3321,7 +3318,7 @@ int list_caches(unsigned int list_format, bool by_id_path)
 				snprintf(core_mode_string, sizeof(core_mode_string),
 						"%s%s",
 						cache_mode_to_name(resolved),
-						asterisk);
+						view.any_override ? "*" : "");
 			} else {
 				strncpy(core_mode_string, "-", sizeof(core_mode_string));
 			}
@@ -3336,8 +3333,7 @@ int list_caches(unsigned int list_format, bool by_id_path)
 					curr_core->info.exp_obj_exists ? exp_obj : "-" /* exported object path */);
 		}
 
-		if (have_view)
-			cache_cmode_view_deinit(&view);
+		cache_cmode_view_deinit(&view);
 	}
 
 	free_cache_devices_list(caches, caches_count);
