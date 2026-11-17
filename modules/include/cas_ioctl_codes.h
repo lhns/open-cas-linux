@@ -334,6 +334,10 @@ enum kcas_cache_param_id {
 	cache_param_promotion_policy_type,
 	cache_param_promotion_nhit_insertion_threshold,
 	cache_param_promotion_nhit_trigger_threshold,
+	/* Runtime only, never persisted. Counters are truncated to 32 bits. */
+	cache_param_flush_skip_enabled,
+	cache_param_flush_skip_forwarded,
+	cache_param_flush_skip_skipped,
 	cache_param_id_max,
 };
 

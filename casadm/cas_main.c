@@ -717,6 +717,12 @@ uint32_t dirty_ratio_inertia_transform(uint32_t value)
 	return value / MiB;
 }
 
+static char *yes_no_values[] = {
+	[0] = "no",
+	[1] = "yes",
+	NULL,
+};
+
 static struct cas_param cas_cache_params[] = {
 	/* Cleaning policy type */
 	[cache_param_cleaning_policy_type] = {
@@ -766,6 +772,18 @@ static struct cas_param cas_cache_params[] = {
 	[cache_param_promotion_nhit_trigger_threshold] = {
 		.name = "Policy trigger [%]",
 	},
+
+	/* Flush skip (runtime only, not persisted) */
+	[cache_param_flush_skip_enabled] = {
+		.name = "Enabled",
+		.value_names = yes_no_values,
+	},
+	[cache_param_flush_skip_forwarded] = {
+		.name = "Core flushes forwarded (mod 2^32)",
+	},
+	[cache_param_flush_skip_skipped] = {
+		.name = "Core flushes skipped (mod 2^32)",
+	},
 	{0},
 };
 
@@ -797,6 +815,8 @@ static struct cas_param cas_cache_params[] = {
 #define CLEANING_ACP_MAX_BUFFERS_DESC "Number of cache lines flushed in single ACP cleaning thread iteration" \
 	" <%d-%d> (default: %d)"
 
+#define FLUSH_SKIP_ENABLED_DESC "Skip flushes to cores that received no write " 	"since their last flush. Runtime only, reset to 'no' when the module " 	"is loaded. Available values: {yes|no}"
+
 #define PROMOTION_POLICY_TYPE_DESC "Promotion policy type. "\
 	"Available policy types: {always|nhit}"
 
@@ -822,6 +842,10 @@ static cli_namespace set_param_namespace = {
 
 		CACHE_PARAMS_NS_BEGIN("promotion", "Promotion policy parameters")
 			{'p', "policy", PROMOTION_POLICY_TYPE_DESC, 1, "POLICY", 0},
+		CACHE_PARAMS_NS_END()
+
+		CACHE_PARAMS_NS_BEGIN("flush-skip", "Core flush skipping (runtime only)")
+			{'e', "enabled", FLUSH_SKIP_ENABLED_DESC, 1, "yes|no", 0},
 		CACHE_PARAMS_NS_END()
 
 		CACHE_PARAMS_NS_BEGIN("promotion-nhit", "Promotion policy NHIT parameters")
@@ -1062,6 +1086,24 @@ int set_param_promotion_nhit_handle_option(char *opt, const char **arg)
 	return SUCCESS;
 }
 
+int set_param_flush_skip_handle_option(char *opt, const char **arg)
+{
+	if (!strcmp(opt, "enabled")) {
+		if (!strcmp("yes", arg[0])) {
+			SET_CACHE_PARAM(cache_param_flush_skip_enabled, 1);
+		} else if (!strcmp("no", arg[0])) {
+			SET_CACHE_PARAM(cache_param_flush_skip_enabled, 0);
+		} else {
+			cas_printf(LOG_ERR, "Error: Invalid value, use yes or no.\n");
+			return FAILURE;
+		}
+	} else {
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
 int set_param_namespace_handle_option(char *namespace, char *opt, const char **arg)
 {
 	if (!strcmp(namespace, "seq-cutoff")) {
@@ -1082,6 +1124,9 @@ int set_param_namespace_handle_option(char *namespace, char *opt, const char **a
 	} else if (!strcmp(namespace, "promotion-nhit")) {
 		return cache_param_handle_option_generic(opt, arg,
 				set_param_promotion_nhit_handle_option);
+	} else if (!strcmp(namespace, "flush-skip")) {
+		return cache_param_handle_option_generic(opt, arg,
+				set_param_flush_skip_handle_option);
 	} else {
 		return FAILURE;
 	}
@@ -1132,6 +1177,7 @@ static cli_namespace get_param_namespace = {
 		GET_CACHE_PARAMS_NS("cleaning-acp", "Cleaning policy ACP parameters")
 		GET_CACHE_PARAMS_NS("promotion", "Promotion policy parameters")
 		GET_CACHE_PARAMS_NS("promotion-nhit", "Promotion policy NHIT parameters")
+		GET_CACHE_PARAMS_NS("flush-skip", "Core flush skipping (runtime only)")
 
 		{0},
 	},
@@ -1183,6 +1229,12 @@ int get_param_namespace_handle_option(char *namespace, char *opt, const char **a
 	} else if (!strcmp(namespace, "promotion-nhit")) {
 		SELECT_CACHE_PARAM(cache_param_promotion_nhit_insertion_threshold);
 		SELECT_CACHE_PARAM(cache_param_promotion_nhit_trigger_threshold);
+		return cache_param_handle_option_generic(opt, arg,
+				get_param_handle_option);
+	} else if (!strcmp(namespace, "flush-skip")) {
+		SELECT_CACHE_PARAM(cache_param_flush_skip_enabled);
+		SELECT_CACHE_PARAM(cache_param_flush_skip_forwarded);
+		SELECT_CACHE_PARAM(cache_param_flush_skip_skipped);
 		return cache_param_handle_option_generic(opt, arg,
 				get_param_handle_option);
 	} else {

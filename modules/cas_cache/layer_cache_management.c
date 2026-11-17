@@ -3689,6 +3689,11 @@ int cache_mngt_set_cache_params(struct kcas_set_cache_param *info)
 		result = cache_mngt_set_promotion_param(cache, ocf_promotion_nhit,
 				ocf_nhit_trigger_threshold, info->param_value);
 		break;
+	case cache_param_flush_skip_enabled:
+		/* RAM only, deliberately no metadata update */
+		ocf_cache_set_flush_skip(cache, !!info->param_value);
+		result = 0;
+		break;
 	default:
 		result = -EINVAL;
 	}
@@ -3764,6 +3769,22 @@ int cache_mngt_get_cache_params(struct kcas_get_cache_param *info)
 		result = cache_mngt_get_promotion_param(cache, ocf_promotion_nhit,
 				ocf_nhit_trigger_threshold, &info->param_value);
 		break;
+	case cache_param_flush_skip_enabled:
+	case cache_param_flush_skip_forwarded:
+	case cache_param_flush_skip_skipped: {
+		bool enabled;
+		uint64_t forwarded, skipped;
+
+		ocf_cache_get_flush_skip(cache, &enabled, &forwarded, &skipped);
+		if (info->param_id == cache_param_flush_skip_enabled)
+			info->param_value = enabled;
+		else if (info->param_id == cache_param_flush_skip_forwarded)
+			info->param_value = (uint32_t)forwarded;
+		else
+			info->param_value = (uint32_t)skipped;
+		result = 0;
+		break;
+	}
 	default:
 		result = -EINVAL;
 	}

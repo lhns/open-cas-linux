@@ -237,6 +237,7 @@ Available namespaces are:
 \fBcleaning-acp\fR - Cleaning policy ACP parameters.
 \fBpromotion\fR - Promotion policy parameters.
 \fBpromotion-nhit\fR - Promotion policy NHIT parameters.
+\fBflush-skip\fR - Core flush skipping (runtime only, not persisted).
 
 .SH Options that are valid with --set-param (-X) --name (-n) seq-cutoff are:
 
@@ -343,6 +344,17 @@ Percent of cache to be occupied before cache inserts will be filtered by the pol
 .B -t, --threshold <NUMBER>
 Number of core line accesses required for it to be inserted into cache.
 
+.SH Options that are valid with --set-param (-X) --name (-n) flush-skip are:
+
+.TP
+.B -i, --cache-id <ID>
+Identifier of cache instance <1-16384>.
+
+.TP
+.B -e, --enabled {yes|no}
+Do not forward a flush to a core when no write or discard reached that core since its last successful flush
+(data is already durable on the cache device). Not persisted: \fBno\fR after every module load.
+
 .SH Options that are valid with --get-param (-G) are:
 
 .TP
@@ -357,6 +369,7 @@ Available namespaces are:
 \fBcleaning-acp\fR - Cleaning policy ACP parameters.
 \fBpromotion\fR - Promotion policy parameters.
 \fBpromotion-nhit\fR - Promotion policy NHIT parameters.
+\fBflush-skip\fR - Core flush skipping (runtime only, not persisted).
 
 .SH Options that are valid with --get-param (-G) --name (-n) seq-cutoff are:
 
@@ -421,6 +434,17 @@ Identifier of cache instance <1-16384>.
 .TP
 .B -o, --output-format {table|csv}
 Defines output format for parameter list. It can be either \fBtable\fR (default) or \fBcsv\fR.
+
+.SH Options that are valid with --get-param (-G) --name (-n) flush-skip are:
+
+.TP
+.B -i, --cache-id <ID>
+Identifier of cache instance <1-16384>.
+
+.TP
+.B -o, --output-format {table|csv}
+Defines output format for parameter list. It can be either \fBtable\fR (default) or \fBcsv\fR.
+Shows the switch and the number of core flushes forwarded and skipped since cache start (counters modulo 2^32).
 
 .SH Options that are valid with --set-cache-mode (-Q) are:
 .TP
