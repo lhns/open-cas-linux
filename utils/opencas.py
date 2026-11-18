@@ -10,6 +10,8 @@ import re
 import os
 import stat
 import time
+import sys
+import syslog
 
 # Casadm functionality
 
@@ -270,6 +272,8 @@ class cas_config(object):
                 self.check_lazy_startup_valid(param_value)
             elif param_name == "target_failover_state":
                 self.check_failover_state_valid(param_value)
+            elif param_name == "flush_skip":
+                self.check_flush_skip_valid(param_value)
             else:
                 raise ValueError(f'{param_name} is invalid parameter name')
 
@@ -303,6 +307,10 @@ class cas_config(object):
         def check_lazy_startup_valid(self, lazy_startup):
             if lazy_startup not in ["true", "false"]:
                 raise ValueError('{0} is invalid lazy_startup value'.format(lazy_startup))
+
+        def check_flush_skip_valid(self, flush_skip):
+            if flush_skip not in FLUSH_SKIP_VALUES:
+                raise ValueError(f"{flush_skip} is invalid flush_skip value")
 
         def check_failover_state_valid(self, failover_state):
             if failover_state not in ["active", "standby"]:
@@ -567,8 +575,35 @@ class cas_config(object):
 
 # Config helper functions
 
+# flush_skip is RAM-only in the cache module, so it is re-applied on every start/load
+FLUSH_SKIP_VALUES = {"yes": "yes", "true": "yes", "no": "no", "false": "no"}
+
+
+def apply_flush_skip(cache):
+    """Set flush-skip from config. Never raises: an old module without the
+    param must not break boot."""
+    value = cache.params.get("flush_skip")
+    if value is None or cache.params.get("target_failover_state") == "standby":
+        return
+    try:
+        casadm.set_param("flush-skip", cache_id=cache.cache_id,
+                         enabled=FLUSH_SKIP_VALUES[value])
+    except Exception as e:
+        msg = (f"Unable to set flush-skip={value} on cache {cache.cache_id}, "
+               f"continuing without it. Reason: {e}")
+        print(msg, file=sys.stderr)
+        try:
+            syslog.syslog(syslog.LOG_WARNING, msg)
+        except Exception:
+            pass
+
 
 def start_cache(cache, load, force=False):
+    _start_cache(cache, load, force)
+    apply_flush_skip(cache)
+
+
+def _start_cache(cache, load, force=False):
     target_state = cache.params.get("target_failover_state")
     if target_state is not None and target_state == "standby":
         casadm.start_standby_cache(

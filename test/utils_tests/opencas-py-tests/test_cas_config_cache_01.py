@@ -462,3 +462,43 @@ def test_cache_config_to_line_from_line(
         cache_reference.cache_mode
     )
     assert cache_after.params == cache_reference.params
+
+
+@pytest.mark.parametrize("value", ["yes", "no", "true", "false"])
+@mock.patch("opencas.cas_config.cache_config.validate_config")
+def test_cache_config_flush_skip_parsed(mock_validate, value):
+    c = opencas.cas_config.cache_config.from_line(f"1 /dev/nvme0n1 WB cache_line_size=4,flush_skip={value}")
+    assert c.params["flush_skip"] == value
+    c.check_flush_skip_valid(value)
+
+
+@pytest.mark.parametrize("value", ["", "on", "2", "maybe"])
+@mock.patch("opencas.cas_config.cache_config.validate_config")
+def test_cache_config_flush_skip_invalid(mock_validate, value):
+    c = opencas.cas_config.cache_config.from_line(f"1 /dev/nvme0n1 WB flush_skip={value}")
+    with pytest.raises(ValueError, match="flush_skip"):
+        c.validate_parameter("flush_skip", c.params["flush_skip"])
+
+
+@mock.patch("opencas.casadm.set_param")
+@mock.patch("opencas.casadm.start_cache")
+@pytest.mark.parametrize("load", [True, False])
+def test_start_cache_applies_flush_skip(mock_start, mock_set, load):
+    c = opencas.cas_config.cache_config(1, "/dev/nvme0n1", "wb", flush_skip="true")
+    opencas.start_cache(c, load=load)
+    mock_set.assert_called_once_with("flush-skip", cache_id=1, enabled="yes")
+
+
+@mock.patch("opencas.casadm.set_param")
+@mock.patch("opencas.casadm.start_cache")
+def test_start_cache_without_flush_skip_does_not_set(mock_start, mock_set):
+    opencas.start_cache(opencas.cas_config.cache_config(1, "/dev/nvme0n1", "wb"), load=True)
+    mock_set.assert_not_called()
+
+
+@mock.patch("opencas.casadm.set_param", side_effect=opencas.casadm.CasadmError(mock.Mock(stderr="unsupported")))
+@mock.patch("opencas.casadm.start_cache")
+def test_start_cache_flush_skip_failure_is_not_fatal(mock_start, mock_set, capsys):
+    c = opencas.cas_config.cache_config(1, "/dev/nvme0n1", "wb", flush_skip="yes")
+    opencas.start_cache(c, load=True)
+    assert "flush-skip" in capsys.readouterr().err

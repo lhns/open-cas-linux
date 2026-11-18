@@ -24,7 +24,9 @@ Cache device <DEVICE>
 .br
 Cache mode {wt|wb|wa|pt|wo}
 .br
-Extra fields (optional) ioclass_file=<file>,cleaning_policy=<alru,nop>,promotion_policy=<always,nhit>,target_failover_state=<active,standby>
+Extra fields (optional) ioclass_file=<file>,cleaning_policy=<alru,nop>,promotion_policy=<always,nhit>,target_failover_state=<active,standby>,flush_skip=<yes,no>
+.br
+flush_skip=yes skips flushes to cores that received no writes (see casadm --set-param -n flush-skip). The switch is runtime only, so it is applied on every cache start or load; with a cache module that lacks the parameter a warning is logged and startup continues. Default: no.
 .RE
 .TP
 \fB[cores]\fR   Cores configuration. Following columns are required:
