@@ -1,1 +1,3 @@
 test/** -linguist-detectable
+# LF everywhere, whatever core.autocrlf says on the committing machine.
+* text=auto eol=lf
