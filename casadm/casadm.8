@@ -437,6 +437,8 @@ Defines output format for parameter list. It can be either \fBtable\fR (default)
 
 .SH Options that are valid with --get-param (-G) --name (-n) flush-skip are:
 
+Shows the switch and the number of core flushes forwarded and skipped since cache start (counters modulo 2^32).
+
 .TP
 .B -i, --cache-id <ID>
 Identifier of cache instance <1-16384>.
@@ -444,7 +446,6 @@ Identifier of cache instance <1-16384>.
 .TP
 .B -o, --output-format {table|csv}
 Defines output format for parameter list. It can be either \fBtable\fR (default) or \fBcsv\fR.
-Shows the switch and the number of core flushes forwarded and skipped since cache start (counters modulo 2^32).
 
 .SH Options that are valid with --set-cache-mode (-Q) are:
 .TP

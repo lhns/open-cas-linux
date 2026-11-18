@@ -815,7 +815,9 @@ static struct cas_param cas_cache_params[] = {
 #define CLEANING_ACP_MAX_BUFFERS_DESC "Number of cache lines flushed in single ACP cleaning thread iteration" \
 	" <%d-%d> (default: %d)"
 
-#define FLUSH_SKIP_ENABLED_DESC "Skip flushes to cores that received no write " 	"since their last flush. Runtime only, reset to 'no' when the module " 	"is loaded. Available values: {yes|no}"
+#define FLUSH_SKIP_ENABLED_DESC "Skip flushes to cores that received no write " \
+	"since their last flush. Runtime only, reset to 'no' when the module " \
+	"is loaded. Available values: {yes|no}"
 
 #define PROMOTION_POLICY_TYPE_DESC "Promotion policy type. "\
 	"Available policy types: {always|nhit}"
