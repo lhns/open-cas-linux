@@ -14,6 +14,7 @@ class ParamName(Enum):
     cleaning_acp = "cleaning-acp"
     promotion = "promotion"
     promotion_nhit = "promotion-nhit"
+    flush_skip = "flush-skip"
 
     def __str__(self):
         return self.value

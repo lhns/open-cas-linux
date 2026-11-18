@@ -87,6 +87,7 @@ set_params_help = [
     r"promotion-nhit - Promotion policy NHIT parameters",
     r"cleaning-alru - Cleaning policy ALRU parameters",
     r"cleaning-acp - Cleaning policy ACP parameters",
+    r"flush-skip - Core flush skipping \(runtime only\)",
     r"Options that are valid with --set-param \(-X\) --name \(-n\) seq-cutoff are:",
     r"-i  --cache-id \<ID\>                  Identifier of cache instance \<1-16384\>",
     r"-j  --core-id \<ID\>                   Identifier of core \<0-4095\> within given cache "
@@ -131,6 +132,11 @@ set_params_help = [
     r"\<0-10000\>\[ms\] \(default: 10 ms\)",
     r"-b  --flush-max-buffers \<NUMBER\>     Number of cache lines flushed in single ACP cleaning "
     r"thread iteration \<1-10000\> \(default: 128\)",
+    r"Options that are valid with --set-param \(-X\) --name \(-n\) flush-skip are:",
+    r"-i  --cache-id \<ID\>                  Identifier of cache instance \<1-16384\>",
+    r"-e  --enabled \<yes|no\>               Skip flushes to cores that received no write since "
+    r"their last flush\. Runtime only, reset to 'no' on every cache start or load\. "
+    r"Available values: \{yes|no\}",
 ]
 
 
@@ -144,6 +150,7 @@ get_params_help = [
     r"cleaning-acp - Cleaning policy ACP parameters",
     r"promotion - Promotion policy parameters",
     r"promotion-nhit - Promotion policy NHIT parameters",
+    r"flush-skip - Core flush skipping \(runtime only\)",
     r"Options that are valid with --get-param \(-G\) --name \(-n\) seq-cutoff are:",
     r"-i  --cache-id \<ID\>                  Identifier of cache instance \<1-16384\>",
     r"-j  --core-id \<ID\>                   Identifier of core \<0-4095\> within given cache "
@@ -162,6 +169,9 @@ get_params_help = [
     r"-i  --cache-id \<ID\>                  Identifier of cache instance \<1-16384\>",
     r"-o  --output-format \<FORMAT\>         Output format: \{table|csv\}",
     r"Options that are valid with --get-param \(-G\) --name \(-n\) promotion-nhit are:",
+    r"-i  --cache-id \<ID\>                  Identifier of cache instance \<1-16384\>",
+    r"-o  --output-format \<FORMAT\>         Output format: \{table|csv\}",
+    r"Options that are valid with --get-param \(-G\) --name \(-n\) flush-skip are:",
     r"-i  --cache-id \<ID\>                  Identifier of cache instance \<1-16384\>",
     r"-o  --output-format \<FORMAT\>         Output format: \{table|csv\}",
 ]

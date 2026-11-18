@@ -201,6 +201,22 @@ def get_flush_parameters_acp(cache_id: int):
     return flush_parameters
 
 
+def get_flush_skip_parameters(cache_id: int) -> dict:
+    """Returns {"enabled": bool, "forwarded": int, "skipped": int} (counters are mod 2^32)."""
+    casadm_output = casadm.get_param_flush_skip(
+        cache_id, casadm.OutputFormat.csv
+    ).stdout.splitlines()
+    params = {}
+    for line in casadm_output:
+        if "Enabled" in line:
+            params["enabled"] = line.split(",")[1].strip().lower() == "yes"
+        if "Core flushes forwarded" in line:
+            params["forwarded"] = int(line.split(",")[1])
+        if "Core flushes skipped" in line:
+            params["skipped"] = int(line.split(",")[1])
+    return params
+
+
 def get_seq_cut_off_parameters(cache_id: int, core_id: int):
     casadm_output = casadm.get_param_cutoff(
         cache_id, core_id, casadm.OutputFormat.csv

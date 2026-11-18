@@ -242,6 +242,23 @@ def get_param_cleaning_acp_cmd(
     return casadm_bin + command
 
 
+def set_param_flush_skip_cmd(cache_id: str, enabled: str, shortcut: bool = False) -> str:
+    name = "flush-skip"
+    command = _set_param_cmd(name=name, cache_id=cache_id, shortcut=shortcut)
+    command += (" -e " if shortcut else " --enabled ") + enabled
+    return casadm_bin + command
+
+
+def get_param_flush_skip_cmd(
+    cache_id: str, output_format: str = None, shortcut: bool = False
+) -> str:
+    name = "flush-skip"
+    command = _get_param_cmd(
+        name=name, cache_id=cache_id, output_format=output_format, shortcut=shortcut
+    )
+    return casadm_bin + command
+
+
 def set_cache_mode_cmd(
     cache_mode: str, cache_id: str, flush_cache: str = None, shortcut: bool = False
 ) -> str:

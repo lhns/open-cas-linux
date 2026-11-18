@@ -231,6 +231,31 @@ def set_param_cleaning_acp(
     return output
 
 
+def set_param_flush_skip(cache_id: int, enabled: bool, shortcut: bool = False) -> Output:
+    output = TestRun.executor.run(
+        set_param_flush_skip_cmd(
+            cache_id=str(cache_id), enabled="yes" if enabled else "no", shortcut=shortcut
+        )
+    )
+    if output.exit_code != 0:
+        raise CmdException("Error while setting flush-skip parameters.", output)
+    return output
+
+
+def get_param_flush_skip(
+    cache_id: int, output_format: OutputFormat = None, shortcut: bool = False
+) -> Output:
+    _output_format = output_format.name if output_format else None
+    output = TestRun.executor.run(
+        get_param_flush_skip_cmd(
+            cache_id=str(cache_id), output_format=_output_format, shortcut=shortcut
+        )
+    )
+    if output.exit_code != 0:
+        raise CmdException("Getting flush-skip params failed.", output)
+    return output
+
+
 def set_param_promotion(cache_id: int, policy: PromotionPolicy, shortcut: bool = False) -> Output:
     output = TestRun.executor.run(
         set_param_promotion_cmd(
