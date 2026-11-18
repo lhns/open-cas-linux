@@ -816,8 +816,8 @@ static struct cas_param cas_cache_params[] = {
 	" <%d-%d> (default: %d)"
 
 #define FLUSH_SKIP_ENABLED_DESC "Skip flushes to cores that received no write " \
-	"since their last flush. Runtime only, reset to 'no' when the module " \
-	"is loaded. Available values: {yes|no}"
+	"since their last flush. Runtime only, reset to 'no' on every cache " \
+	"start or load. Available values: {yes|no}"
 
 #define PROMOTION_POLICY_TYPE_DESC "Promotion policy type. "\
 	"Available policy types: {always|nhit}"
@@ -844,10 +844,6 @@ static cli_namespace set_param_namespace = {
 
 		CACHE_PARAMS_NS_BEGIN("promotion", "Promotion policy parameters")
 			{'p', "policy", PROMOTION_POLICY_TYPE_DESC, 1, "POLICY", 0},
-		CACHE_PARAMS_NS_END()
-
-		CACHE_PARAMS_NS_BEGIN("flush-skip", "Core flush skipping (runtime only)")
-			{'e', "enabled", FLUSH_SKIP_ENABLED_DESC, 1, "yes|no", 0},
 		CACHE_PARAMS_NS_END()
 
 		CACHE_PARAMS_NS_BEGIN("promotion-nhit", "Promotion policy NHIT parameters")
@@ -897,6 +893,10 @@ static cli_namespace set_param_namespace = {
 				CLI_OPTION_RANGE_INT | CLI_OPTION_DEFAULT_INT,
 				OCF_ACP_MIN_FLUSH_MAX_BUFFERS, OCF_ACP_MAX_FLUSH_MAX_BUFFERS,
 				OCF_ACP_DEFAULT_FLUSH_MAX_BUFFERS},
+		CACHE_PARAMS_NS_END()
+
+		CACHE_PARAMS_NS_BEGIN("flush-skip", "Core flush skipping (runtime only)")
+			{'e', "enabled", FLUSH_SKIP_ENABLED_DESC, 1, "yes|no", 0},
 		CACHE_PARAMS_NS_END()
 
 		{0},
