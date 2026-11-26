@@ -21,6 +21,23 @@ struct cas_thread_info {
 	struct task_struct *thread;
 };
 
+/*
+ * Requests run here, not in the submitter's context, so the submitter's plug
+ * never sees their bottom bios. Plug the whole run instead: adjacent bios of
+ * consecutive requests (e.g. 4 KiB page writeback) then merge. A plug only
+ * delays dispatch; completion still follows device completion. It is flushed
+ * when the run ends or the thread sleeps, and nothing in a queue run waits for
+ * I/O without sleeping.
+ */
+static void _cas_io_queue_run(ocf_queue_t q)
+{
+	struct blk_plug plug;
+
+	blk_start_plug(&plug);
+	ocf_queue_run(q);
+	blk_finish_plug(&plug);
+}
+
 static int _cas_io_queue_thread(void *data)
 {
 	ocf_queue_t q = data;
@@ -44,7 +61,7 @@ static int _cas_io_queue_thread(void *data)
 		wait_event_interruptible(info->wq, ocf_queue_pending_io(q) ||
 				atomic_read(&info->stop));
 
-		ocf_queue_run(q);
+		_cas_io_queue_run(q);
 
 	} while (!atomic_read(&info->stop) || ocf_queue_pending_io(q));
 
