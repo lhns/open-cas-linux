@@ -82,6 +82,7 @@ struct cache_priv {
 };
 
 extern ocf_ctx_t cas_ctx;
+extern bool pt_inline;
 
 static inline void cache_name_from_id(char *name, uint16_t id)
 {

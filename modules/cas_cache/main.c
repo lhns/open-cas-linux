@@ -40,6 +40,11 @@ module_param(seq_cut_off_mb, uint, (S_IRUSR | S_IRGRP));
 MODULE_PARM_DESC(seq_cut_off_mb,
 		"Sequential cut off threshold in MiB. 0 - disable");
 
+bool pt_inline;
+module_param(pt_inline, bool, 0440);
+MODULE_PARM_DESC(pt_inline,
+		 "Run pass-through I/O in the submitter's context (read at cache start)");
+
 /* globals */
 ocf_ctx_t cas_ctx;
 struct cas_module cas_module;
