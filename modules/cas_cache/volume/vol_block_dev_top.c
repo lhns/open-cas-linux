@@ -242,6 +242,8 @@ struct blkdev_data_master_ctx {
 	struct bio *bio;
 	uint32_t master_size;
 	unsigned long long start_time;
+	bool classified;
+	ocf_part_id_t part;
 };
 
 static int blkdev_handle_data_single(struct bd_object *bvol, struct bio *bio,
@@ -269,7 +271,9 @@ static int blkdev_handle_data_single(struct bd_object *bvol, struct bio *bio,
 			CAS_BIO_BISECTOR(bio) << SECTOR_SHIFT,
 			CAS_BIO_BISIZE(bio), (bio_data_dir(bio) == READ) ?
 					OCF_READ : OCF_WRITE,
-			cas_cls_classify(cache, bio), CAS_CLEAR_FLUSH(flags));
+			master_ctx->classified ? master_ctx->part :
+					cas_cls_classify(cache, bio),
+			CAS_CLEAR_FLUSH(flags));
 
 	if (!io) {
 		printk(KERN_CRIT "Out of memory. Ending IO processing.\n");
@@ -316,13 +320,46 @@ static bool blkdev_bio_data_aligned(struct bd_object *bvol, struct bio *bio)
 	return true;
 }
 
-static void blkdev_handle_data(struct bd_object *bvol, struct bio *bio)
+static void blkdev_submit_data(struct bd_object *bvol, struct bio *bio,
+		struct blkdev_data_master_ctx *master_ctx)
 {
 	const uint32_t max_io_sectors = (32*MiB) >> SECTOR_SHIFT;
 	const uint32_t align_sectors = (128*KiB) >> SECTOR_SHIFT;
 	struct bio *split = NULL;
 	uint32_t sectors, to_submit;
 	int error;
+
+	for (sectors = bio_sectors(bio); sectors > 0;) {
+		if (sectors <= max_io_sectors) {
+			split = bio;
+			sectors = 0;
+		} else {
+			to_submit = max_io_sectors -
+					CAS_BIO_BISECTOR(bio) % align_sectors;
+			split = cas_bio_split(bio, to_submit);
+			sectors -= to_submit;
+		}
+
+		error = blkdev_handle_data_single(bvol, split, master_ctx);
+		if (error)
+			goto err;
+	}
+
+	blkdev_complete_data_master(master_ctx->data, 0);
+
+	return;
+
+err:
+	if (split != bio)
+		bio_put(split);
+	if (master_ctx->data)
+		blkdev_complete_data_master(master_ctx->data, error);
+	else
+		CAS_BIO_ENDIO(bio, CAS_BIO_BISIZE(bio), CAS_ERRNO_TO_BLK_STS(error));
+}
+
+static void blkdev_handle_data(struct bd_object *bvol, struct bio *bio)
+{
 	struct blkdev_data_master_ctx master_ctx = {
 		.bio = bio,
 		.master_size = CAS_BIO_BISIZE(bio),
@@ -348,33 +385,7 @@ static void blkdev_handle_data(struct bd_object *bvol, struct bio *bio)
 	}
 
 	master_ctx.start_time = cas_generic_start_io_acct(bio);
-	for (sectors = bio_sectors(bio); sectors > 0;) {
-		if (sectors <= max_io_sectors) {
-			split = bio;
-			sectors = 0;
-		} else {
-			to_submit = max_io_sectors -
-					CAS_BIO_BISECTOR(bio) % align_sectors;
-			split = cas_bio_split(bio, to_submit);
-			sectors -= to_submit;
-		}
-
-		error = blkdev_handle_data_single(bvol, split, &master_ctx);
-		if (error)
-			goto err;
-	}
-
-	blkdev_complete_data_master(master_ctx.data, 0);
-
-	return;
-
-err:
-	if (split != bio)
-		bio_put(split);
-	if (master_ctx.data)
-		blkdev_complete_data_master(master_ctx.data, error);
-	else
-		CAS_BIO_ENDIO(bio, CAS_BIO_BISIZE(bio), CAS_ERRNO_TO_BLK_STS(error));
+	blkdev_submit_data(bvol, bio, &master_ctx);
 }
 
 static void blkdev_complete_discard(ocf_io_t io, void *priv1, void *priv2,
@@ -468,11 +479,366 @@ static void blkdev_handle_bio(struct bd_object *bvol, struct bio *bio)
 		blkdev_handle_bio_noflush(bvol, bio);
 }
 
+/*
+ * Coalescing (module parameter coalesce): contiguous writes submitted under
+ * one plug are collected in a run hung on the plug (blk_check_plugged, as md
+ * raid1 does) and reach OCF as one request. The block layer plugs every
+ * ->submit_bio call, so a lone direct write forms a run of one, which goes
+ * out on the normal path.
+ *
+ * Lifetime: a pending run implies an opener of the exported device, and the
+ * exported object cannot be removed while it is open; runs deferred to
+ * expobj_wq are drained by destroy_workqueue after del_gendisk.
+ */
+extern bool cas_coalesce;
+
+/* cas_bvec_pool has slab classes up to 128 bvecs */
+#define BLKDEV_RUN_MAX_SEGS 128
+
+enum blkdev_run_end {
+	BLKDEV_RUN_END_UNPLUG,
+	BLKDEV_RUN_END_SCHEDULE,	/* deferred to expobj_wq */
+	BLKDEV_RUN_END_CAP,
+	BLKDEV_RUN_END_MISMATCH,	/* not contiguous, or other flags/class */
+	BLKDEV_RUN_END_OTHER,		/* another bio to this device */
+	BLKDEV_RUN_END_MAX,
+	BLKDEV_RUN_FITS = BLKDEV_RUN_END_MAX,
+};
+
+static const char * const blkdev_run_end_names[] = {
+	"unplug", "schedule", "cap", "mismatch", "other",
+};
+
+struct blkdev_coalesce_stats {
+	u64 runs;
+	u64 run_bios;
+	u64 merged;		/* runs of 2+ bios sent as one request */
+	u64 end[BLKDEV_RUN_END_MAX];
+	u64 no_cb;		/* plug callback allocation failed */
+	u64 split;		/* run sent bio by bio, allocation failed */
+};
+
+static DEFINE_PER_CPU(struct blkdev_coalesce_stats, blkdev_coalesce_stats);
+
+struct blkdev_run {
+	struct blk_plug_cb cb;		/* cb.data is the bd_object */
+	struct work_struct work;
+	struct bio_list bios;
+	sector_t end;			/* first sector after the run */
+	unsigned long long start_time;	/* of the first bio */
+	unsigned int nr_bios;
+	unsigned int nr_segs;
+	uint64_t opf;
+	unsigned short ioprio;
+#ifdef CAS_WLTH_SUPPORT
+	int write_hint;
+#endif
+	ocf_part_id_t part;
+};
+
+static void blkdev_complete_run(ocf_io_t io, void *priv1, void *priv2,
+		int error)
+{
+	struct blk_data *data = priv1;
+	struct bio *bio = data->bio, *next;
+	int result = map_cas_err_to_generic(error);
+
+	ocf_io_put(io);
+
+	for (; bio; bio = next) {
+		next = bio->bi_next;
+		bio->bi_next = NULL;
+		cas_generic_end_io_acct(bio, data->start_time);
+		CAS_BIO_ENDIO(bio, CAS_BIO_BISIZE(bio),
+				CAS_ERRNO_TO_BLK_STS(result));
+	}
+
+	cas_free_blk_data(data);
+}
+
+/* Takes the bios off @run; never collects. May sleep. */
+static void blkdev_run_submit(struct bd_object *bvol, struct blkdev_run *run,
+		enum blkdev_run_end why)
+{
+	ocf_cache_t cache = ocf_volume_get_cache(bvol->front_volume);
+	struct cache_priv *cache_priv = ocf_cache_get_priv(cache);
+	struct blkdev_data_master_ctx ctx;
+	struct blk_data *data;
+	struct bio_vec bvec;
+	struct bvec_iter iter;
+	struct bio *bio;
+	ocf_io_t io;
+	uint32_t i = 0;
+
+	if (!run->nr_bios)
+		return;
+
+	might_sleep();
+
+	this_cpu_inc(blkdev_coalesce_stats.runs);
+	this_cpu_add(blkdev_coalesce_stats.run_bios, run->nr_bios);
+	this_cpu_inc(blkdev_coalesce_stats.end[why]);
+
+	if (run->nr_bios == 1)
+		goto one_by_one;
+
+	data = cas_alloc_blk_data(run->nr_segs, GFP_NOIO);
+	if (!data)
+		goto split;
+
+	bio_list_for_each(bio, &run->bios) {
+		bio_for_each_segment(bvec, bio, iter)
+			data->vec[i++] = bvec;
+	}
+
+	bio = run->bios.head;
+	io = ocf_volume_new_io(bvol->front_volume,
+			cache_priv->io_queues[raw_smp_processor_id()],
+			CAS_BIO_BISECTOR(bio) << SECTOR_SHIFT,
+			(run->end - CAS_BIO_BISECTOR(bio)) << SECTOR_SHIFT,
+			OCF_WRITE, run->part, CAS_CLEAR_FLUSH(run->opf));
+	if (!io) {
+		cas_free_blk_data(data);
+		goto split;
+	}
+
+	if (ocf_io_set_data(io, data, 0) < 0) {
+		ocf_io_put(io);
+		cas_free_blk_data(data);
+		goto split;
+	}
+
+	data->bio = bio_list_get(&run->bios);
+	data->start_time = run->start_time;
+	run->nr_bios = 0;
+	this_cpu_inc(blkdev_coalesce_stats.merged);
+
+	ocf_io_set_cmpl(io, data, NULL, blkdev_complete_run);
+	ocf_volume_submit_io(io);
+	return;
+
+split:
+	this_cpu_inc(blkdev_coalesce_stats.split);
+one_by_one:
+	while ((bio = bio_list_pop(&run->bios))) {
+		ctx = (struct blkdev_data_master_ctx) {
+			.bio = bio,
+			.master_size = CAS_BIO_BISIZE(bio),
+			.start_time = run->start_time,
+			.classified = true,
+			.part = run->part,
+		};
+		blkdev_submit_data(bvol, bio, &ctx);
+	}
+	run->nr_bios = 0;
+}
+
+static void blkdev_run_work(struct work_struct *work)
+{
+	struct blkdev_run *run = container_of(work, struct blkdev_run, work);
+
+	blkdev_run_submit(run->cb.data, run, BLKDEV_RUN_END_SCHEDULE);
+	kfree(run);
+}
+
+static void blkdev_run_unplug(struct blk_plug_cb *cb, bool from_schedule)
+{
+	struct blkdev_run *run = container_of(cb, struct blkdev_run, cb);
+	struct bd_object *bvol = cb->data;
+
+	if (run->nr_bios && from_schedule) {
+		/* Must not sleep here; the rescuer guarantees progress */
+		INIT_WORK(&run->work, blkdev_run_work);
+		queue_work(bvol->expobj_wq, &run->work);
+		return;
+	}
+
+	blkdev_run_submit(bvol, run, BLKDEV_RUN_END_UNPLUG);
+	kfree(run);
+}
+
+/* Moves the pending bios to @to and leaves @run empty. Does not sleep. */
+static void blkdev_run_detach(struct blkdev_run *run, struct blkdev_run *to)
+{
+	*to = *run;
+	bio_list_init(&run->bios);
+	run->nr_bios = 0;
+	run->nr_segs = 0;
+}
+
+static enum blkdev_run_end blkdev_run_fits(struct blkdev_run *run,
+		struct bio *bio, unsigned int segs, ocf_part_id_t part)
+{
+	if (run->end != CAS_BIO_BISECTOR(bio) ||
+			run->opf != CAS_BIO_OP_FLAGS(bio) ||
+			run->ioprio != bio->bi_ioprio ||
+#ifdef CAS_WLTH_SUPPORT
+			run->write_hint != bio->bi_write_hint ||
+#endif
+			run->part != part)
+		return BLKDEV_RUN_END_MISMATCH;
+
+	if (run->nr_segs + segs > BLKDEV_RUN_MAX_SEGS)
+		return BLKDEV_RUN_END_CAP;
+
+	return BLKDEV_RUN_FITS;
+}
+
+/* Submits this device's pending run of the current plug, if any */
+static void blkdev_run_flush(struct bd_object *bvol)
+{
+	struct blk_plug *plug = current->plug;
+	struct blkdev_run *run, pending;
+	struct blk_plug_cb *cb;
+
+	if (!plug || list_empty(&plug->cb_list))
+		return;
+
+	list_for_each_entry(cb, &plug->cb_list, list) {
+		if (cb->callback != blkdev_run_unplug || cb->data != bvol)
+			continue;
+
+		run = container_of(cb, struct blkdev_run, cb);
+		blkdev_run_detach(run, &pending);
+		blkdev_run_submit(bvol, &pending, BLKDEV_RUN_END_OTHER);
+		return;
+	}
+}
+
+static bool blkdev_bio_collectable(struct bd_object *bvol, struct bio *bio,
+		unsigned int *segs)
+{
+	if (bio_op(bio) != REQ_OP_WRITE || !CAS_BIO_BISIZE(bio) ||
+			(CAS_BIO_OP_FLAGS(bio) & (REQ_NOMERGE_FLAGS | REQ_NOWAIT)))
+		return false;
+
+	*segs = bio_segments(bio);
+	if (*segs > BLKDEV_RUN_MAX_SEGS)
+		return false;
+
+	return blkdev_bio_data_aligned(bvol, bio);
+}
+
+/* Returns false if @bio is to take the normal path */
+static bool blkdev_collect(struct bd_object *bvol, struct bio *bio)
+{
+	ocf_cache_t cache = ocf_volume_get_cache(bvol->front_volume);
+	struct blkdev_data_master_ctx ctx;
+	struct blkdev_run *run, pending;
+	struct blk_plug_cb *cb;
+	enum blkdev_run_end why;
+	unsigned long long start_time;
+	unsigned int segs;
+	ocf_part_id_t part;
+
+	if (!current->plug)
+		return false;
+
+	if (!READ_ONCE(cas_coalesce) ||
+			!blkdev_bio_collectable(bvol, bio, &segs)) {
+		blkdev_run_flush(bvol);
+		return false;
+	}
+
+	WARN_ON_ONCE(in_interrupt());
+
+	/*
+	 * Everything that can sleep comes first: a sleep flushes the plug,
+	 * and the unplug callback frees the run.
+	 */
+	part = cas_cls_classify(cache, bio);
+	start_time = cas_generic_start_io_acct(bio);
+
+	for (;;) {
+		cb = blk_check_plugged(blkdev_run_unplug, bvol, sizeof(*run));
+		if (!cb) {
+			this_cpu_inc(blkdev_coalesce_stats.no_cb);
+			ctx = (struct blkdev_data_master_ctx) {
+				.bio = bio,
+				.master_size = CAS_BIO_BISIZE(bio),
+				.start_time = start_time,
+				.classified = true,
+				.part = part,
+			};
+			blkdev_submit_data(bvol, bio, &ctx);
+			return true;
+		}
+
+		run = container_of(cb, struct blkdev_run, cb);
+		if (!run->nr_bios)
+			break;
+
+		why = blkdev_run_fits(run, bio, segs, part);
+		if (why == BLKDEV_RUN_FITS)
+			break;
+
+		/* May sleep, so @run may be gone afterwards */
+		blkdev_run_detach(run, &pending);
+		blkdev_run_submit(bvol, &pending, why);
+	}
+
+	/* Nothing that can sleep from here on */
+	if (!run->nr_bios) {
+		run->opf = CAS_BIO_OP_FLAGS(bio);
+		run->ioprio = bio->bi_ioprio;
+#ifdef CAS_WLTH_SUPPORT
+		run->write_hint = bio->bi_write_hint;
+#endif
+		run->part = part;
+		run->start_time = start_time;
+	}
+	bio_list_add(&run->bios, bio);
+	run->end = CAS_BIO_BISECTOR(bio) + bio_sectors(bio);
+	run->nr_bios++;
+	run->nr_segs += segs;
+
+	return true;
+}
+
+static int blkdev_coalesce_stats_get(char *buf, const struct kernel_param *kp)
+{
+	struct blkdev_coalesce_stats sum = {}, *s;
+	int cpu, i, n;
+
+	for_each_possible_cpu(cpu) {
+		s = per_cpu_ptr(&blkdev_coalesce_stats, cpu);
+		sum.runs += s->runs;
+		sum.run_bios += s->run_bios;
+		sum.merged += s->merged;
+		sum.no_cb += s->no_cb;
+		sum.split += s->split;
+		for (i = 0; i < BLKDEV_RUN_END_MAX; i++)
+			sum.end[i] += s->end[i];
+	}
+
+	n = scnprintf(buf, PAGE_SIZE, "runs %llu\nrun_bios %llu\nmerged %llu\n"
+			"no_cb %llu\nsplit %llu\n", sum.runs, sum.run_bios,
+			sum.merged, sum.no_cb, sum.split);
+	for (i = 0; i < BLKDEV_RUN_END_MAX; i++)
+		n += scnprintf(buf + n, PAGE_SIZE - n, "end_%s %llu\n",
+				blkdev_run_end_names[i], sum.end[i]);
+
+	return n;
+}
+
+static int blkdev_coalesce_stats_set(const char *val,
+		const struct kernel_param *kp)
+{
+	return -EPERM;
+}
+
+static const struct kernel_param_ops blkdev_coalesce_stats_ops = {
+	.set = blkdev_coalesce_stats_set,
+	.get = blkdev_coalesce_stats_get,
+};
+module_param_cb(coalesce_stats, &blkdev_coalesce_stats_ops, NULL, S_IRUSR);
+MODULE_PARM_DESC(coalesce_stats, "Coalescing counters (read only)");
+
 static void blkdev_submit_bio(struct bd_object *bvol, struct bio *bio)
 {
 	if (in_interrupt())
 		blkdev_defer_bio(bvol, bio, blkdev_handle_bio);
-	else
+	else if (!blkdev_collect(bvol, bio))
 		blkdev_handle_bio(bvol, bio);
 }
 

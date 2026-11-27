@@ -40,6 +40,12 @@ module_param(seq_cut_off_mb, uint, (S_IRUSR | S_IRGRP));
 MODULE_PARM_DESC(seq_cut_off_mb,
 		"Sequential cut off threshold in MiB. 0 - disable");
 
+bool cas_coalesce;
+module_param_named(coalesce, cas_coalesce, bool, (S_IRUSR | S_IWUSR | S_IRGRP));
+MODULE_PARM_DESC(coalesce,
+		"Submit contiguous plugged writes to the cache as one request "
+		"(0 - off, 1 - on); may be changed at runtime");
+
 /* globals */
 ocf_ctx_t cas_ctx;
 struct cas_module cas_module;
