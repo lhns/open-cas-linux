@@ -1908,6 +1908,7 @@ int cache_mngt_attach_cache_cfg(char *cache_name, size_t name_len,
 	//TODO maybe attach should allow to change cache line size?
 	//cfg->cache_line_size = cmd->line_size;
 	cfg->use_submit_io_fast = !use_io_scheduler;
+	cfg->pt_inline = pt_inline;
 	cfg->locked = true;
 	cfg->metadata_volatile = true;
 
@@ -1989,6 +1990,7 @@ int cache_mngt_create_cache_cfg(struct ocf_mngt_cache_config *cfg,
 	cfg->cache_line_size = cmd->line_size;
 	cfg->pt_unaligned_io = !unaligned_io;
 	cfg->use_submit_io_fast = !use_io_scheduler;
+	cfg->pt_inline = pt_inline;
 	cfg->locked = true;
 	cfg->metadata_volatile = false;
 
