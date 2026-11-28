@@ -488,8 +488,10 @@ static void blkdev_handle_bio(struct bd_object *bvol, struct bio *bio)
  * out on the normal path.
  *
  * Lifetime: a pending run implies an opener of the exported device, and the
- * exported object cannot be removed while it is open; runs deferred to
- * expobj_wq are drained by destroy_workqueue after del_gendisk.
+ * exported object cannot be removed while it is open. Deferred work on
+ * expobj_wq is flushed after the exported object is locked and before it is
+ * destroyed: work that ran after del_gendisk/put_disk would end bios on a
+ * freed disk.
  */
 extern bool cas_coalesce;
 
@@ -1017,6 +1019,8 @@ static int kcas_volume_destroy_exported_object(ocf_volume_t volume)
 	else if (result)
 		return result;
 
+	flush_workqueue(bvol->expobj_wq);
+
 	result = cas_exp_obj_destroy(bvol->dsk);
 	if (result)
 		goto err;
@@ -1134,6 +1138,8 @@ static int kcas_core_stop_exported_object(ocf_core_t core, void *cntx)
 
 		printk(KERN_INFO "Stopping device %s\n",
 			cas_exp_obj_get_gendisk(bvol->dsk)->disk_name);
+
+		flush_workqueue(bvol->expobj_wq);
 
 		ret = cas_exp_obj_destroy(bvol->dsk);
 		if (!ret) {
