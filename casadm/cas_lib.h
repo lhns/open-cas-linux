@@ -55,8 +55,10 @@ struct cache_device {
 };
 
 /* Wire ids of fork params are sparse; cas_cache_params[] is dense. */
-#define CACHE_PARAM_INDEX(_id) ((_id) < cache_param_id_max ? (int)(_id) : 		(int)cache_param_id_max + (int)(_id) - KCAS_CACHE_PARAM_FORK_BASE)
-#define CACHE_PARAM_ID(_index) ((_index) < cache_param_id_max ? (_index) : 		KCAS_CACHE_PARAM_FORK_BASE + (_index) - cache_param_id_max)
+#define CACHE_PARAM_INDEX(_id) ((_id) < cache_param_id_max ? (int)(_id) : \
+		(int)cache_param_id_max + (int)(_id) - KCAS_CACHE_PARAM_FORK_BASE)
+#define CACHE_PARAM_ID(_index) ((_index) < cache_param_id_max ? (_index) : \
+		KCAS_CACHE_PARAM_FORK_BASE + (_index) - cache_param_id_max)
 
 struct cas_param {
 	char *name;
