@@ -45,6 +45,7 @@ TARGETS      = $(TARGET)
 
 OBJS  = cas_lib.o
 OBJS += cas_main.o
+OBJS += cas_cmode_eval.o
 OBJS += argp.o
 OBJS += statistics_view_csv.o
 OBJS += cas_lib_utils.o
