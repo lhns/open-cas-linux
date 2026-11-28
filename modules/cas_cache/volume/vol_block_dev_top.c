@@ -124,6 +124,11 @@ static int blkdev_core_set_geometry(struct cas_disk *dsk, void *private)
 
 	blk_stack_limits(&exp_q->limits, &core_q->limits, 0);
 
+	/* The limits copied from the cache and core devices carry their poll
+	 * and nowait support, but requests are handled asynchronously by OCF:
+	 * a polled bio would never be polled and a nowait one may block. */
+	cas_queue_clear_poll_nowait(exp_q);
+
 	/* We don't want to receive splitted requests*/
 	CAS_SET_QUEUE_CHUNK_SECTORS(exp_q, 0);
 
@@ -892,6 +897,7 @@ static int blkdev_cache_set_geometry(struct cas_disk *dsk, void *private)
 	cas_cache_set_no_merges_flag(cache_q);
 
 	blk_stack_limits(&exp_q->limits, &cache_q->limits, 0);
+	cas_queue_clear_poll_nowait(exp_q);
 
 	/* We don't want to receive splitted requests*/
 	CAS_SET_QUEUE_CHUNK_SECTORS(exp_q, 0);
