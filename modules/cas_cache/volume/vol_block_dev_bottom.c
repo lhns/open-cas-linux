@@ -121,6 +121,22 @@ static inline uint64_t filter_req_flags(int dir, uint64_t flags)
 }
 
 /*
+ * OCF hands the flags of the user request to both legs. The cache device is
+ * ours, so it gets only what changes durability or priority: FUA (the data may
+ * be the only copy) and SYNC (harmless: I/O scheduler and writeback throttling
+ * hint only). The rest (NOWAIT, POLLED, META, RAHEAD, op bits, ...) describes
+ * the user's request, not the cache I/O, and could fail it (NOWAIT: -EAGAIN).
+ */
+#define CAS_CACHE_LEG_FLAGS (REQ_FUA | REQ_SYNC)
+
+static inline bool block_dev_is_cache_volume(ocf_volume_t volume)
+{
+	ocf_cache_t cache = ocf_volume_get_cache(volume);
+
+	return !cache || volume == ocf_cache_get_volume(cache);
+}
+
+/*
  *
  */
 CAS_DECLARE_BLOCK_CALLBACK(cas_bd_forward_end, struct bio *bio,
@@ -158,6 +174,9 @@ static void block_dev_forward_io(ocf_volume_t volume,
 	int error = 0;
 
 	CAS_DEBUG_PARAM("Address = %llu, bytes = %u\n", addr, bytes);
+
+	if (block_dev_is_cache_volume(volume))
+		flags &= CAS_CACHE_LEG_FLAGS;
 
 	cas_io_iter_init(&iter, data->vec, data->size);
 	if (offset != cas_io_iter_move(&iter, offset)) {
