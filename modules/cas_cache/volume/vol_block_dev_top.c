@@ -355,7 +355,8 @@ err:
 	if (master_ctx->data)
 		blkdev_complete_data_master(master_ctx->data, error);
 	else
-		CAS_BIO_ENDIO(bio, CAS_BIO_BISIZE(bio), CAS_ERRNO_TO_BLK_STS(error));
+		CAS_BIO_ENDIO(bio, CAS_BIO_BISIZE(bio),
+				CAS_ERRNO_TO_BLK_STS(error));
 }
 
 static void blkdev_handle_data(struct bd_object *bvol, struct bio *bio)
@@ -499,7 +500,7 @@ enum blkdev_run_end {
 	BLKDEV_RUN_END_UNPLUG,
 	BLKDEV_RUN_END_SCHEDULE,	/* deferred to expobj_wq */
 	BLKDEV_RUN_END_CAP,
-	BLKDEV_RUN_END_MISMATCH,	/* not contiguous, or other flags/class */
+	BLKDEV_RUN_END_MISMATCH,	/* gap, other flags or class */
 	BLKDEV_RUN_END_OTHER,		/* another bio to this device */
 	BLKDEV_RUN_END_MAX,
 	BLKDEV_RUN_FITS = BLKDEV_RUN_END_MAX,
@@ -708,8 +709,9 @@ static void blkdev_run_flush(struct bd_object *bvol)
 static bool blkdev_bio_collectable(struct bd_object *bvol, struct bio *bio,
 		unsigned int *segs)
 {
-	if (bio_op(bio) != REQ_OP_WRITE || !CAS_BIO_BISIZE(bio) ||
-			(CAS_BIO_OP_FLAGS(bio) & (REQ_NOMERGE_FLAGS | REQ_NOWAIT)))
+	if (bio_op(bio) != REQ_OP_WRITE || !CAS_BIO_BISIZE(bio))
+		return false;
+	if (CAS_BIO_OP_FLAGS(bio) & (REQ_NOMERGE_FLAGS | REQ_NOWAIT))
 		return false;
 
 	*segs = bio_segments(bio);
