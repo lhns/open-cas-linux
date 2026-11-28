@@ -1440,7 +1440,7 @@ int cache_params_set(unsigned int cache_id, struct cas_param *params)
 			continue;
 
 		cmd.cache_id = cache_id;
-		cmd.param_id = i;
+		cmd.param_id = CACHE_PARAM_ID(i);
 		cmd.param_value = params[i].value;
 
 		if (run_ioctl(fd, KCAS_IOCTL_SET_CACHE_PARAM, &cmd) < 0) {
@@ -1481,7 +1481,7 @@ int cache_params_get(unsigned int cache_id, struct cas_param *params,
 			continue;
 
 		cmd.cache_id = cache_id;
-		cmd.param_id = i;
+		cmd.param_id = CACHE_PARAM_ID(i);
 
 		if (run_ioctl(fd, KCAS_IOCTL_GET_CACHE_PARAM, &cmd) < 0) {
 			if (cmd.ext_err_code == OCF_ERR_CACHE_NOT_EXIST)
