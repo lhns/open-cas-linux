@@ -321,6 +321,8 @@ struct kcas_get_core_param {
 	int ext_err_code;
 };
 
+#define KCAS_CACHE_PARAM_FORK_BASE 0x10000
+
 enum kcas_cache_param_id {
 	cache_param_cleaning_policy_type,
 	cache_param_cleaning_alru_wake_up_time,
@@ -334,11 +336,17 @@ enum kcas_cache_param_id {
 	cache_param_promotion_policy_type,
 	cache_param_promotion_nhit_insertion_threshold,
 	cache_param_promotion_nhit_trigger_threshold,
-	/* Runtime only, never persisted. Counters are truncated to 32 bits. */
-	cache_param_flush_skip_enabled,
-	cache_param_flush_skip_forwarded,
-	cache_param_flush_skip_skipped,
 	cache_param_id_max,
+
+	/*
+	 * Fork-only ids, kept far from the upstream range so they cannot
+	 * collide with params upstream adds later (it uses 12 and 13 for
+	 * prefetch). Runtime only, never persisted. Counters are truncated
+	 * to 32 bits.
+	 */
+	cache_param_flush_skip_enabled = KCAS_CACHE_PARAM_FORK_BASE,
+	cache_param_flush_skip_forwarded = KCAS_CACHE_PARAM_FORK_BASE + 1,
+	cache_param_flush_skip_skipped = KCAS_CACHE_PARAM_FORK_BASE + 2,
 };
 
 struct kcas_set_cache_param {

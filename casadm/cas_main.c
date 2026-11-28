@@ -573,7 +573,7 @@ int handle_stop()
 	SELECT_PARAM(cas_core_params, _index)
 
 #define SELECT_CACHE_PARAM(_index) \
-	SELECT_PARAM(cas_cache_params, _index)
+	SELECT_PARAM(cas_cache_params, CACHE_PARAM_INDEX(_index))
 
 #define SET_PARAM(_array, _index, _value) ({ \
 	SELECT_PARAM(_array, _index); \
@@ -585,7 +585,7 @@ int handle_stop()
 	SET_PARAM(cas_core_params, _index, _value)
 
 #define SET_CACHE_PARAM(_index, _value) \
-	SET_PARAM(cas_cache_params, _index, _value)
+	SET_PARAM(cas_cache_params, CACHE_PARAM_INDEX(_index), _value)
 
 #define CORE_PARAMS_NS_BEGIN(_name, _desc) { \
 	.name = _name, \
@@ -725,63 +725,63 @@ static char *yes_no_values[] = {
 
 static struct cas_param cas_cache_params[] = {
 	/* Cleaning policy type */
-	[cache_param_cleaning_policy_type] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_policy_type)] = {
 		.name = "Cleaning policy type" ,
 		.value_names = cleaning_policy_type_values,
 	},
 
 	/* Cleaning policy ALRU params */
-	[cache_param_cleaning_alru_wake_up_time] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_alru_wake_up_time)] = {
 		.name = "Wake up time [s]" ,
 	},
-	[cache_param_cleaning_alru_stale_buffer_time] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_alru_stale_buffer_time)] = {
 		.name = "Stale buffer time [s]" ,
 	},
-	[cache_param_cleaning_alru_flush_max_buffers] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_alru_flush_max_buffers)] = {
 		.name = "Flush max buffers" ,
 	},
-	[cache_param_cleaning_alru_activity_threshold] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_alru_activity_threshold)] = {
 		.name = "Activity threshold [ms]" ,
 	},
-	[cache_param_cleaning_alru_dirty_ratio_threshold] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_alru_dirty_ratio_threshold)] = {
 		.name = "Dirty ratio trigger threshold [%]",
 	},
-	[cache_param_cleaning_alru_dirty_ratio_inertia] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_alru_dirty_ratio_inertia)] = {
 		.name = "Dirty ratio trigger inertia [MiB]",
 		.transform_value = dirty_ratio_inertia_transform,
 	},
 
 	/* Cleaning policy ACP params */
-	[cache_param_cleaning_acp_wake_up_time] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_acp_wake_up_time)] = {
 		.name = "Wake up time [ms]" ,
 	},
-	[cache_param_cleaning_acp_flush_max_buffers] = {
+	[CACHE_PARAM_INDEX(cache_param_cleaning_acp_flush_max_buffers)] = {
 		.name = "Flush max buffers" ,
 	},
 
 	/* Promotion policy type */
-	[cache_param_promotion_policy_type] = {
+	[CACHE_PARAM_INDEX(cache_param_promotion_policy_type)] = {
 		.name = "Promotion policy type",
 		.value_names = promotion_policy_type_values,
 	},
 
 	/*Promotion policy NHIT params */
-	[cache_param_promotion_nhit_insertion_threshold] = {
+	[CACHE_PARAM_INDEX(cache_param_promotion_nhit_insertion_threshold)] = {
 		.name = "Insertion threshold",
 	},
-	[cache_param_promotion_nhit_trigger_threshold] = {
+	[CACHE_PARAM_INDEX(cache_param_promotion_nhit_trigger_threshold)] = {
 		.name = "Policy trigger [%]",
 	},
 
 	/* Flush skip (runtime only, not persisted) */
-	[cache_param_flush_skip_enabled] = {
+	[CACHE_PARAM_INDEX(cache_param_flush_skip_enabled)] = {
 		.name = "Enabled",
 		.value_names = yes_no_values,
 	},
-	[cache_param_flush_skip_forwarded] = {
+	[CACHE_PARAM_INDEX(cache_param_flush_skip_forwarded)] = {
 		.name = "Core flushes forwarded (mod 2^32)",
 	},
-	[cache_param_flush_skip_skipped] = {
+	[CACHE_PARAM_INDEX(cache_param_flush_skip_skipped)] = {
 		.name = "Core flushes skipped (mod 2^32)",
 	},
 	{0},
