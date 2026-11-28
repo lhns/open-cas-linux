@@ -38,6 +38,7 @@
 #include "safeclib/safe_lib.h"
 #include <cas_ioctl_codes.h>
 #include "psort.h"
+#include "cas_cmode_eval.h"
 #include <libgen.h>
 #include <regex.h>
 #include <math.h>
@@ -2249,134 +2250,60 @@ int partition_list(unsigned int cache_id, unsigned int output_format)
 	return result;
 }
 
-/* Narrow IO-class rule parser used by list_caches() to compute the
- * predominant cache mode per core. Accepts ONLY rules of the form
- * "core_id:eq:N" optionally OR'd with more of the same, with an
- * optional "&done" terminator on each term. Anything else (metadata,
- * file_size, io_size, mixed conditions, core_id:ne, etc.) is
- * rejected; callers fall back to the asterisk-only marker on such
- * caches.
+/* Per-cache view of the IO class table, used by list_caches() to render the
+ * per-core "write policy" column. The effective mode of a core is worked out
+ * by cmode_effective(), which replays the kernel classifier over the class
+ * rules (see cas_cmode_eval.h). Only core_id and done are evaluated; if any
+ * other condition could change which class wins, the cache-wide mode is
+ * shown rather than a guess.
  *
- * The kernel module's classifier (modules/cas_cache/classifier.c)
- * has a full-grammar parser, but it is kernel-only, tightly coupled
- * to evaluating a concrete struct ocf_request, and not exposed via
- * any userspace-callable interface or ioctl. Reusing it from casadm
- * would require lifting the tokenizer into a shared library, which
- * is out of scope for this view-only feature. This narrow parser
- * covers the common case (per-core cache mode via core_id:eq rules)
- * and degrades safely to "*" on anything else.
+ * any_override drives the trailing "*": the cache has at least one IO class
+ * (incl. class 0) with a cache-mode override.
  *
- * On success, appends each referenced core id to out_ids[] (capacity
- * cap; count written to *out_count) and returns true. Returns false
- * if any sub-term doesn't match the grammar, no core id is
- * referenced at all, or cap would overflow. Never modifies the
- * caller's rule buffer. */
-static bool parse_pure_core_id_rule(const char *rule, uint16_t *out_ids,
-				    size_t cap, size_t *out_count)
-{
-	char buf[OCF_IO_CLASS_NAME_MAX];
-	char *or_save = NULL;
-	char *or_tok;
-	size_t count = 0;
-	size_t len;
-
-	if (!rule)
-		return false;
-	len = strnlen(rule, OCF_IO_CLASS_NAME_MAX);
-	if (len == 0 || len >= OCF_IO_CLASS_NAME_MAX)
-		return false;
-	memcpy(buf, rule, len);
-	buf[len] = '\0';
-
-	or_tok = strtok_r(buf, "|", &or_save);
-	while (or_tok) {
-		char *and_save = NULL;
-		char *and_tok;
-		bool term_has_core_id = false;
-		unsigned long term_core_id = 0;
-
-		and_tok = strtok_r(or_tok, "&", &and_save);
-		while (and_tok) {
-			if (and_tok[0] == '\0' ||
-			    strcmp(and_tok, "done") == 0) {
-				/* accepted, no core id contribution */
-			} else if (strncmp(and_tok, "core_id:eq:", 11) == 0) {
-				char *end;
-				unsigned long v;
-
-				if (term_has_core_id)
-					return false;
-				v = strtoul(and_tok + 11, &end, 10);
-				if (*end != '\0' || end == and_tok + 11)
-					return false;
-				term_core_id = v;
-				term_has_core_id = true;
-			} else {
-				return false;
-			}
-			and_tok = strtok_r(NULL, "&", &and_save);
-		}
-
-		if (term_has_core_id) {
-			if (count >= cap)
-				return false;
-			out_ids[count++] = (uint16_t)term_core_id;
-		}
-
-		or_tok = strtok_r(NULL, "|", &or_save);
-	}
-
-	if (count == 0)
-		return false;
-
-	*out_count = count;
-	return true;
-}
-
-/* Per-cache view of effective cache mode per core, derived from the IO
- * class table. Used by list_caches() to render the "write policy"
- * column. per_core[i] == ocf_cache_mode_max means "no pure-core-id
- * IO class maps this core"; the caller should use `fallback`.
- *
- * A zero-initialized view (per_core == NULL, any_override == false)
- * is a valid "no view built" state; it can be passed to
- * cache_cmode_view_deinit() unchanged, and any_override reads as
- * false (no asterisk). */
+ * A zero-initialized view (classes == NULL, any_override == false) is a valid
+ * "no view built" state; it can be passed to cache_cmode_view_deinit()
+ * unchanged. */
 struct cache_cmode_view {
-	ocf_cache_mode_t *per_core;	/* OCF_CORE_NUM entries, or NULL */
-	ocf_cache_mode_t fallback;
+	struct cmode_class *classes;	/* existing classes, ascending id */
+	char (*names)[OCF_IO_CLASS_NAME_MAX];
+	size_t count;
+	ocf_cache_mode_t cache_wide;
 	bool any_override;
 };
 
 static void cache_cmode_view_deinit(struct cache_cmode_view *view)
 {
-	free(view->per_core);
-	view->per_core = NULL;
+	free(view->classes);
+	free(view->names);
+	view->classes = NULL;
+	view->names = NULL;
+	view->count = 0;
 }
 
-/* Allocate and populate the view. On OOM, leaves view->per_core == NULL
- * and the rest of the struct in its zero-initialized state -- callers
- * gate every read on view->per_core. */
+/* Read the IO class table. On OOM or open failure leaves view->classes ==
+ * NULL; callers gate every read on it. */
 static void cache_cmode_view_build(struct cache_cmode_view *view,
 				   unsigned int cache_id,
 				   ocf_cache_mode_t cache_wide_mode)
 {
 	struct kcas_io_class io_class;
-	uint16_t ids[256];
-	size_t n;
+	size_t count = 0;
 	int fd, i;
 
-	view->per_core = malloc(OCF_CORE_NUM * sizeof(*view->per_core));
-	if (!view->per_core)
-		return;
-	for (i = 0; i < OCF_CORE_NUM; i++)
-		view->per_core[i] = ocf_cache_mode_max;
-	view->fallback = cache_wide_mode;
+	view->cache_wide = cache_wide_mode;
 	view->any_override = false;
 
 	fd = open_ctrl_device();
 	if (fd == -1)
 		return;
+
+	view->classes = calloc(OCF_USER_IO_CLASS_MAX, sizeof(*view->classes));
+	view->names = calloc(OCF_USER_IO_CLASS_MAX, sizeof(*view->names));
+	if (!view->classes || !view->names) {
+		cache_cmode_view_deinit(view);
+		close(fd);
+		return;
+	}
 
 	for (i = 0; i < OCF_USER_IO_CLASS_MAX; i++) {
 		memset(&io_class, 0, sizeof(io_class));
@@ -2389,31 +2316,32 @@ static void cache_cmode_view_build(struct cache_cmode_view *view,
 			break;
 		}
 
-		if (io_class.info.cache_mode < ocf_cache_mode_wt ||
-		    io_class.info.cache_mode >= ocf_cache_mode_max)
-			continue;
-
-		view->any_override = true;
-
-		if (i == 0) {
-			/* unclassified catchall */
-			view->fallback = io_class.info.cache_mode;
-			continue;
+		/* Every existing class captures I/O, with or without an
+		 * override. */
+		snprintf(view->names[count], sizeof(view->names[count]), "%s",
+			 io_class.info.name);
+		view->classes[count].id = i;
+		view->classes[count].rule = view->names[count];
+		view->classes[count].mode = -1;
+		if (io_class.info.cache_mode >= ocf_cache_mode_wt &&
+		    io_class.info.cache_mode < ocf_cache_mode_max) {
+			view->classes[count].mode = io_class.info.cache_mode;
+			view->any_override = true;
 		}
-
-		n = 0;
-		if (!parse_pure_core_id_rule(io_class.info.name, ids,
-					     sizeof(ids) / sizeof(ids[0]), &n))
-			continue;
-
-		for (size_t k = 0; k < n; k++) {
-			if (ids[k] < OCF_CORE_NUM &&
-			    view->per_core[ids[k]] == ocf_cache_mode_max)
-				view->per_core[ids[k]] = io_class.info.cache_mode;
-		}
+		count++;
 	}
+	view->count = count;
 
 	close(fd);
+}
+
+static ocf_cache_mode_t cache_cmode_view_resolve(
+		const struct cache_cmode_view *view, uint64_t core_id)
+{
+	bool determined;
+
+	return cmode_effective(view->classes, view->count, core_id,
+			       view->cache_wide, &determined);
 }
 
 enum {
@@ -3148,12 +3076,10 @@ int list_caches(unsigned int list_format, bool by_id_path)
 			snprintf(exp_obj, sizeof(exp_obj), "/dev/cas%d-%d",
 					curr_cache->id, curr_core->id);
 
-			if (view.per_core && curr_core->id >= 0 &&
-			    curr_core->id < OCF_CORE_NUM) {
+			if (view.classes && curr_core->id >= 0) {
 				ocf_cache_mode_t resolved =
-					(view.per_core[curr_core->id] != ocf_cache_mode_max)
-						? view.per_core[curr_core->id]
-						: view.fallback;
+					cache_cmode_view_resolve(&view,
+							curr_core->id);
 				snprintf(core_mode_string, sizeof(core_mode_string),
 						"%s%s",
 						cache_mode_to_name(resolved),

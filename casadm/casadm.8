@@ -518,11 +518,16 @@ If this option is not given, displays path in short format (/dev/sdx) instead.
 
 .PP
 The \fBwrite policy\fR column shows, for each cache, the cache-wide mode,
-and for each core, the predominant effective cache mode for traffic to
-that core. The predominant mode is resolved from the IO class table: a
-pure \fBcore_id:eq:N\fR-style IO class with a cache-mode override wins
-for the matching cores, otherwise the unclassified (id 0) class's
-cache-mode override applies if set, otherwise the cache-wide mode. A
+and for each core, the cache mode that I/O to that core gets. This is
+worked out the way the kernel classifier does it: IO classes are tried in
+ascending id order, a matching class replaces the previous match unless the
+previous one ended with \fBdone\fR, and conditions in a rule are combined
+left to right without precedence. The winning class's cache-mode override
+applies, or the cache-wide mode if it has none. A class without an
+override still captures the I/O. Only \fBcore_id\fR and \fBdone\fR are
+evaluated; if any other condition (e.g. \fBmetadata\fR, \fBextension\fR)
+could change which class wins for a core, the cache-wide mode is shown for
+that core. A
 trailing \fB*\fR on a value indicates that the cache has at least one
 IO class with a cache-mode override; use \fBcasadm --io-class --list\fR
 to inspect the full per-class configuration. Scripts that parse the CSV
